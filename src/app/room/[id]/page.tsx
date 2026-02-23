@@ -29,12 +29,19 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
   }, [localPlayerId, viewingPlayerId]);
 
   // Data board yang sedang aktif ditampilkan di grid
-  const activeDisplayBoard = useMemo(() => {
-    const player = players.find(p => p.id === viewingPlayerId);
-    // Jika melihat board sendiri, pakai state lokal 'board' agar instan, 
-    // Jika lawan, pakai data 'board' dari array players (DB)
-    return viewingPlayerId === localPlayerId ? board : (player?.board || []);
-  }, [players, viewingPlayerId, localPlayerId, board]);
+const activeDisplayBoard = useMemo(() => {
+  // Cari data pemain yang sedang diintip di dalam array 'players' (hasil sinkronisasi DB)
+  const targetPlayer = players.find(p => p.id === viewingPlayerId);
+  
+  if (!targetPlayer) return Array(25).fill(null);
+
+  // Jika melihat diri sendiri, gunakan state 'board' utama
+  // Jika melihat lawan, gunakan 'targetPlayer.board' dari database
+  const targetBoard = viewingPlayerId === localPlayerId ? board : targetPlayer.board;
+
+  // Pastikan data board adalah array (terkadang JSONB terbaca sebagai string jika konfigurasi salah)
+  return Array.isArray(targetBoard) ? targetBoard : [];
+}, [players, viewingPlayerId, localPlayerId, board]);
 
   // Kalkulasi B-I-N-G-O untuk board yang sedang dilihat
   const activeLines = useMemo(() => {
@@ -117,22 +124,51 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
   }, [myLines, status, winnerId, localPlayerId, roomId]);
 
   // 3. HANDLERS
-  const handleReady = async () => {
-    if (!localPlayerId || isUpdating) return;
-    setIsUpdating(true);
-    const isFull = board.filter(n => n !== null).length === 25;
-    const finalBoard = isFull ? board : Array.from({ length: 25 }, (_, i) => i + 1).sort(() => Math.random() - 0.5);
+const handleReady = async () => {
+  if (!localPlayerId || isUpdating) return;
+  setIsUpdating(true);
 
-    try {
-      await supabase.from("players").update({ isReady: true, board: finalBoard }).eq("id", localPlayerId);
-      const { data: allP } = await supabase.from("players").select('id, "isReady"').eq("room_id", roomId);
-      
-      if (allP && allP.every(p => p.isReady)) {
-        const { data: first } = await supabase.from("players").select("id").eq("room_id", roomId).order("created_at", { ascending: true }).limit(1).single();
-        await supabase.from("rooms").update({ status: "PLAYING", currentPlayerTurnId: first?.id }).eq("id", roomId);
-      }
-    } finally { setIsUpdating(false); }
-  };
+  // 1. Tentukan board akhir
+  const isFull = board.filter(n => n !== null).length === 25;
+  const finalBoard = isFull ? board : Array.from({ length: 25 }, (_, i) => i + 1).sort(() => Math.random() - 0.5);
+
+  // 2. UPDATE STATE LOKAL DULU (Penting!)
+  // Supaya tampilan di layar kamu sama dengan yang dikirim ke DB
+  if (!isFull) {
+    useGameStore.setState({ board: finalBoard });
+  }
+
+  try {
+    // 3. Kirim ke Database
+    await supabase.from("players")
+      .update({ 
+        isReady: true, 
+        board: finalBoard // Pastikan kolom ini sesuai SQL (board)
+      })
+      .eq("id", localPlayerId);
+
+    // 4. Cek semua pemain (Gunakan fetchRoomData agar pData terbaru)
+    const { data: allP } = await supabase.from("players").select('id, "isReady"').eq("room_id", roomId);
+    
+    if (allP && allP.every(p => p.isReady)) {
+      const { data: first } = await supabase.from("players")
+        .select("id")
+        .eq("room_id", roomId)
+        .order("created_at", { ascending: true })
+        .limit(1)
+        .single();
+
+      await supabase.from("rooms").update({ 
+        status: "PLAYING",
+        currentPlayerTurnId: first?.id 
+      }).eq("id", roomId);
+    }
+  } catch (err) {
+    console.error(err);
+  } finally {
+    setIsUpdating(false);
+  }
+};
 
   const handleCellClick = async (num: number, index: number) => {
     if (status === "SETUP" || status === "LOBBY") {
