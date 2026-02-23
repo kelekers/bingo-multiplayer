@@ -39,7 +39,7 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
       // Fetch Players - Menggunakan kolom "isReady" (CamelCase)
       const { data: pData } = await supabase
         .from("players")
-        .select('id, name, "isReady", board, created_at')
+        .select('id, name, "isReady", board, created_at, "checkedIndices", "isHost"')
         .eq("room_id", roomId)
         .order("created_at", { ascending: true });
       
