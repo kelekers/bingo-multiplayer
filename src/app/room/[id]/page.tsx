@@ -55,7 +55,7 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
 
       const { data: rData } = await supabase.from("rooms").select("*").eq("id", roomId).single();
       if (rData) {
-        setNumbersPicked(rData.numbers_picked || []);
+        setNumbersPicked(rData.numbersPicked || []);
         if (rData.status !== status) setGameStatus(rData.status);
         if (rData.winner_id) setWinner(rData.winner_id);
       }
@@ -72,7 +72,7 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
       .channel(`room-${roomId}`)
       .on("postgres_changes", { event: "UPDATE", schema: "public", table: "rooms", filter: `id=eq.${roomId}` }, 
         (payload) => {
-        setNumbersPicked(payload.new.numbers_picked || []);
+        setNumbersPicked(payload.new.numbersPicked || []);
         setGameStatus(payload.new.status);
         setWinner(payload.new.winner_id);
         // UPDATE INI: Masukkan current_turn_id ke store
@@ -162,7 +162,7 @@ const handleCellClick = async (num: number, index: number) => {
 
     // 3. Update angka dan pindahkan giliran di database
     await supabase.from("rooms").update({ 
-      numbers_picked: newPicked,
+      numbersPicked: newPicked,
       current_turn_id: nextPlayerId
     }).eq("id", roomId);
   }

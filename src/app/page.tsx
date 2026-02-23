@@ -28,7 +28,7 @@ export default function Lobby() {
         .insert([{ 
           id: newRoomId, 
           status: 'LOBBY', 
-          numbers_picked: [] 
+          numbersPicked: [] 
         }]);
 
       if (roomError) throw roomError;
