@@ -6,6 +6,7 @@ import Timer from "@/components/game/Timer";
 import { supabase } from "@/lib/supabase";
 import { useRouter } from "next/navigation";
 import { checkBingoLines } from "@/lib/bingo-logic";
+import { Player } from "@/types";
 
 export default function RoomPage({ params }: { params: Promise<{ id: string }> }) {
   const resolvedParams = use(params);
@@ -19,26 +20,31 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
   } = useGameStore();
 
   const [isUpdating, setIsUpdating] = useState(false);
-  // State untuk memilih board siapa yang sedang dilihat (Default: Board Kita)
+  
+  // State untuk memilih board siapa yang sedang dilihat (Default: Board Saya)
   const [viewingPlayerId, setViewingPlayerId] = useState<string | null>(null);
 
   useEffect(() => {
-    if (localPlayerId) setViewingPlayerId(localPlayerId);
-  }, [localPlayerId]);
+    if (localPlayerId && !viewingPlayerId) setViewingPlayerId(localPlayerId);
+  }, [localPlayerId, viewingPlayerId]);
 
-  // Kalkulasi progress pemain yang sedang dilihat
-  const activeBoard = useMemo(() => {
-    return players.find(p => p.id === viewingPlayerId)?.board || [];
-  }, [players, viewingPlayerId]);
+  // Data board yang sedang aktif ditampilkan di grid
+  const activeDisplayBoard = useMemo(() => {
+    const player = players.find(p => p.id === viewingPlayerId);
+    // Jika melihat board sendiri, pakai state lokal 'board' agar instan, 
+    // Jika lawan, pakai data 'board' dari array players (DB)
+    return viewingPlayerId === localPlayerId ? board : (player?.board || []);
+  }, [players, viewingPlayerId, localPlayerId, board]);
 
+  // Kalkulasi B-I-N-G-O untuk board yang sedang dilihat
   const activeLines = useMemo(() => {
-    const indices = activeBoard
-      .map((num, idx) => (numbersPicked.includes(num) ? idx : -1))
+    const indices = activeDisplayBoard
+      .map((num, idx) => (numbersPicked.includes(num as number) ? idx : -1))
       .filter(idx => idx !== -1);
     return checkBingoLines(indices);
-  }, [activeBoard, numbersPicked]);
+  }, [activeDisplayBoard, numbersPicked]);
 
-  // --- LOGIKA SINKRONISASI (Sama seperti sebelumnya, pastikan fetch data board) ---
+  // 1. SINKRONISASI DATA & REALTIME
   useEffect(() => {
     if (!localPlayerId) {
       router.push("/");
@@ -46,13 +52,14 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
     }
 
     const fetchRoomData = async () => {
+      // Ambil semua kolom untuk menghindari Type Error build
       const { data: pData } = await supabase
         .from("players")
         .select('id, name, "isReady", board, created_at, "isHost", "checkedIndices"')
         .eq("room_id", roomId)
         .order("created_at", { ascending: true });
       
-      if (pData) updatePlayers(pData);
+      if (pData) updatePlayers(pData as Player[]);
 
       const { data: rData } = await supabase
         .from("rooms")
@@ -69,11 +76,16 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
     };
 
     const initSync = async () => {
-      await supabase.from("players").upsert({ id: localPlayerId, room_id: roomId, name: playerName });
+      await supabase.from("players").upsert({
+        id: localPlayerId,
+        room_id: roomId,
+        name: playerName,
+      });
       await fetchRoomData();
     };
 
-    const channel = supabase.channel(`room-${roomId}`)
+    const channel = supabase
+      .channel(`room-${roomId}`)
       .on("postgres_changes", { event: "*", schema: "public", table: "players", filter: `room_id=eq.${roomId}` }, () => fetchRoomData())
       .on("postgres_changes", { event: "UPDATE", schema: "public", table: "rooms", filter: `id=eq.${roomId}` }, (payload) => {
         setNumbersPicked(payload.new.numbersPicked || []);
@@ -85,109 +97,161 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
 
     initSync();
     return () => { supabase.removeChannel(channel); };
-  }, [roomId, localPlayerId]);
+  }, [roomId, localPlayerId, router]);
 
-  // --- HANDLERS ---
+  // 2. CEK KEMENANGAN OTOMATIS (Hanya jika board sendiri yang tembus)
+  const myLines = useMemo(() => {
+    const indices = board
+      .map((num, idx) => (numbersPicked.includes(num as number) ? idx : -1))
+      .filter(idx => idx !== -1);
+    return checkBingoLines(indices);
+  }, [board, numbersPicked]);
+
+  useEffect(() => {
+    if (myLines >= 5 && status === "PLAYING" && !winnerId) {
+      supabase.from("rooms")
+        .update({ winnerId: localPlayerId, status: "FINISHED" })
+        .eq("id", roomId)
+        .then();
+    }
+  }, [myLines, status, winnerId, localPlayerId, roomId]);
+
+  // 3. HANDLERS
   const handleReady = async () => {
     if (!localPlayerId || isUpdating) return;
     setIsUpdating(true);
-    const finalBoard = board.filter(n => n !== null).length === 25 ? board : Array.from({ length: 25 }, (_, i) => i + 1).sort(() => Math.random() - 0.5);
+    const isFull = board.filter(n => n !== null).length === 25;
+    const finalBoard = isFull ? board : Array.from({ length: 25 }, (_, i) => i + 1).sort(() => Math.random() - 0.5);
 
-    await supabase.from("players").update({ isReady: true, board: finalBoard }).eq("id", localPlayerId);
-
-    const { data: allP } = await supabase.from("players").select('id, "isReady"').eq("room_id", roomId);
-    if (allP?.every(p => p.isReady)) {
-      const { data: first } = await supabase.from("players").select("id").eq("room_id", roomId).order("created_at", { ascending: true }).limit(1).single();
-      await supabase.from("rooms").update({ status: "PLAYING", currentPlayerTurnId: first?.id }).eq("id", roomId);
-    }
-    setIsUpdating(false);
+    try {
+      await supabase.from("players").update({ isReady: true, board: finalBoard }).eq("id", localPlayerId);
+      const { data: allP } = await supabase.from("players").select('id, "isReady"').eq("room_id", roomId);
+      
+      if (allP && allP.every(p => p.isReady)) {
+        const { data: first } = await supabase.from("players").select("id").eq("room_id", roomId).order("created_at", { ascending: true }).limit(1).single();
+        await supabase.from("rooms").update({ status: "PLAYING", currentPlayerTurnId: first?.id }).eq("id", roomId);
+      }
+    } finally { setIsUpdating(false); }
   };
 
   const handleCellClick = async (num: number, index: number) => {
-    if (status === "SETUP" || status === "LOBBY") fillCell(index);
-    else if (status === "PLAYING" && currentPlayerTurnId === localPlayerId && viewingPlayerId === localPlayerId) {
+    if (status === "SETUP" || status === "LOBBY") {
+      fillCell(index);
+    } else if (status === "PLAYING") {
+      // Tombol hanya berfungsi jika: 1. Giliran saya, 2. Melihat board saya sendiri
+      if (currentPlayerTurnId !== localPlayerId || viewingPlayerId !== localPlayerId) return;
       if (numbersPicked.includes(num)) return;
-      const nextId = players[(players.findIndex(p => p.id === localPlayerId) + 1) % players.length].id;
+
+      const sortedPlayers = [...players].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+      const myIdx = sortedPlayers.findIndex(p => p.id === localPlayerId);
+      const nextId = sortedPlayers[(myIdx + 1) % sortedPlayers.length].id;
+
       await supabase.from("rooms").update({ numbersPicked: [...numbersPicked, num], currentPlayerTurnId: nextId }).eq("id", roomId);
     }
   };
 
   return (
-    <div className="min-h-[100dvh] bg-[#020617] text-slate-200 flex flex-col font-sans overflow-hidden">
+    <div className="min-h-[100dvh] bg-[#020617] text-white flex flex-col font-sans overflow-hidden">
       
-      {/* Top Navigation / Header */}
-      <header className="p-4 flex justify-between items-center bg-slate-900/50 backdrop-blur-md border-b border-white/5">
-        <div>
-          <p className="text-[10px] font-black text-pink-500 uppercase tracking-widest">Arena Code</p>
-          <p className="text-xl font-mono font-bold">{roomId}</p>
+      {/* HEADER: Progress B-I-N-G-O & Room Code */}
+      <header className="p-4 flex justify-between items-center bg-slate-900/80 backdrop-blur-md border-b border-white/5 shadow-xl">
+        <div className="flex flex-col">
+          <span className="text-[10px] font-black text-pink-500 uppercase tracking-widest">Arena</span>
+          <span className="text-xl font-mono font-black">{roomId}</span>
         </div>
-        <div className="flex gap-1">
-          {"BINGO".split("").map((l, i) => (
-            <div key={i} className={`w-8 h-8 flex items-center justify-center rounded-lg font-black text-xs border transition-all ${activeLines > i ? "bg-pink-600 border-pink-400 shadow-lg shadow-pink-900/50" : "bg-white/5 border-white/5 opacity-30"}`}>{l}</div>
+        
+        <div className="flex gap-1.5">
+          {"BINGO".split("").map((letter, i) => (
+            <div 
+              key={i} 
+              className={`w-9 h-9 flex items-center justify-center rounded-xl text-sm font-black border transition-all duration-500
+                ${activeLines > i 
+                  ? "bg-pink-600 border-pink-400 shadow-[0_0_15px_rgba(236,72,153,0.5)] scale-105" 
+                  : "bg-white/5 border-white/5 opacity-20"}`}
+            >
+              {letter}
+            </div>
           ))}
         </div>
       </header>
 
-      {/* Main Game Area */}
-      <main className="flex-1 overflow-y-auto p-4 flex flex-col items-center">
+      {/* MAIN CONTENT: Status & Board */}
+      <main className="flex-1 flex flex-col items-center p-4 overflow-y-auto no-scrollbar">
         
-        {/* Status & Turn Info */}
+        {/* Turn Indicator Overlay */}
         <div className="w-full max-w-sm mb-4">
-          {status === "PLAYING" ? (
-            <div className={`text-center py-2 rounded-2xl border transition-all ${currentPlayerTurnId === localPlayerId ? "bg-green-500/10 border-green-500/30 text-green-400" : "bg-white/5 border-white/10 text-white/30"}`}>
-              {currentPlayerTurnId === localPlayerId ? "🚀 GILIRAN KAMU!" : `⏳ Menunggu ${players.find(p => p.id === currentPlayerTurnId)?.name}...`}
+          {status === "PLAYING" && !winnerId && (
+            <div className={`text-center py-2.5 px-4 rounded-2xl border transition-all duration-300 ${currentPlayerTurnId === localPlayerId ? "bg-green-500/10 border-green-500/30 shadow-[0_0_20px_rgba(34,197,94,0.1)]" : "bg-white/5 border-white/5"}`}>
+              {currentPlayerTurnId === localPlayerId ? (
+                <p className="text-green-400 font-black text-sm animate-pulse tracking-tight">🚀 GILIRAN KAMU! KLIK ANGKA</p>
+              ) : (
+                <p className="text-white/30 text-xs font-bold uppercase tracking-widest">
+                  Menunggu {players.find(p => p.id === currentPlayerTurnId)?.name}...
+                </p>
+              )}
             </div>
-          ) : (
-            <div className="flex justify-center"><Timer duration={30} onTimeUp={handleReady} /></div>
           )}
+          {status !== "PLAYING" && <div className="flex justify-center"><Timer duration={30} onTimeUp={handleReady} /></div>}
         </div>
 
-        {/* The Grid - Responsive Size */}
-        <div className="w-full max-w-[min(90vw,400px)] aspect-square grid grid-cols-5 gap-2 md:gap-3">
-          {(viewingPlayerId === localPlayerId ? board : activeBoard).map((num, idx) => {
+        {/* Info Pemilik Board */}
+        <div className="mb-2 text-center">
+          <p className="text-[10px] font-bold text-white/30 uppercase tracking-[0.3em]">
+            {viewingPlayerId === localPlayerId ? "Papan Kamu" : `Mengintip Papan: ${players.find(p => p.id === viewingPlayerId)?.name}`}
+          </p>
+        </div>
+
+        {/* 5x5 BINGO GRID */}
+        <div className="w-full max-w-[min(90vw,420px)] aspect-square grid grid-cols-5 gap-2 sm:gap-3">
+          {activeDisplayBoard.map((num, index) => {
             const isPicked = numbersPicked.includes(num as number);
             const isMyBoard = viewingPlayerId === localPlayerId;
-
+            
             return (
-              <button
-                key={idx}
+              <button 
+                key={index} 
+                onClick={() => handleCellClick(num as number, index)}
                 disabled={!isMyBoard || status === "FINISHED"}
-                onClick={() => handleCellClick(num as number, idx)}
-                className={`relative flex items-center justify-center text-lg md:text-2xl font-black rounded-xl md:rounded-2xl border transition-all transform active:scale-90
+                className={`relative aspect-square flex items-center justify-center text-xl sm:text-2xl font-black rounded-2xl border transition-all duration-200 transform active:scale-95
                   ${isPicked 
-                    ? "bg-pink-600 border-pink-400 shadow-[inset_0_2px_10px_rgba(0,0,0,0.3)]" 
+                    ? "bg-pink-600 border-pink-400 shadow-inner" 
                     : isMyBoard 
-                      ? "bg-indigo-600 border-indigo-500 text-white shadow-lg" 
+                      ? "bg-indigo-600 border-indigo-400 text-white shadow-lg" 
                       : "bg-slate-800/50 border-slate-700 text-slate-500"}`}
               >
                 {num}
-                {isPicked && <span className="absolute text-4xl opacity-20 select-none">✕</span>}
+                {isPicked && <div className="absolute inset-0 bg-black/20 flex items-center justify-center text-4xl opacity-30 select-none">✕</div>}
               </button>
             );
           })}
         </div>
 
-        {/* Action Buttons (Lobby/Setup Only) */}
-        {status !== "PLAYING" && (
-          <div className="mt-6 flex gap-3 w-full max-w-sm">
-            <button onClick={randomizeBoard} className="flex-1 py-4 bg-white/5 border border-white/10 rounded-2xl font-bold active:bg-white/10 transition-all">Acak</button>
-            <button onClick={handleReady} disabled={isUpdating} className="flex-[2] py-4 bg-gradient-to-r from-pink-600 to-rose-500 rounded-2xl font-black shadow-lg active:scale-95 transition-all disabled:opacity-50">SAYA SIAP</button>
+        {/* SETUP ACTIONS */}
+        {status !== "PLAYING" && status !== "FINISHED" && (
+          <div className="mt-8 flex gap-3 w-full max-w-sm">
+            <button onClick={randomizeBoard} className="flex-1 py-4 bg-white/5 border border-white/10 rounded-2xl font-bold active:bg-white/10">Acak</button>
+            <button onClick={handleReady} disabled={isUpdating} className="flex-[2] py-4 rounded-2xl font-black bg-gradient-to-r from-pink-600 to-rose-500 shadow-xl shadow-pink-900/30">
+              {isUpdating ? "LOADING..." : "SAYA SIAP"}
+            </button>
           </div>
         )}
       </main>
 
-      {/* Bottom Tabs - Android Style Player Switcher */}
-      <footer className="bg-slate-900 border-t border-white/5 p-4 pb-8">
-        <p className="text-[10px] font-bold text-white/20 uppercase tracking-[0.2em] mb-3 text-center">Lihat Strategi Lawan</p>
-        <div className="flex gap-3 overflow-x-auto pb-2 no-scrollbar">
+      {/* BOTTOM TABS: Pemilih Board (Android UI Style) */}
+      <footer className="bg-slate-900/90 backdrop-blur-xl border-t border-white/5 p-4 pb-8">
+        <p className="text-[10px] font-black text-white/20 uppercase tracking-[0.2em] mb-4 text-center">Ganti Tampilan Board</p>
+        <div className="flex gap-3 overflow-x-auto pb-2 no-scrollbar px-2">
           {players.map((p) => (
             <button
               key={p.id}
               onClick={() => setViewingPlayerId(p.id)}
-              className={`flex-shrink-0 px-4 py-2 rounded-xl border transition-all flex items-center gap-2 ${viewingPlayerId === p.id ? "bg-pink-600 border-pink-400 scale-105" : "bg-white/5 border-white/5 opacity-60"}`}
+              className={`flex-shrink-0 min-w-[100px] px-4 py-2.5 rounded-2xl border transition-all duration-300 flex items-center justify-center gap-2
+                ${viewingPlayerId === p.id 
+                  ? "bg-pink-600 border-pink-400 scale-105 shadow-lg shadow-pink-900/20" 
+                  : "bg-white/5 border-white/5 opacity-50"}`}
             >
-              <div className={`w-2 h-2 rounded-full ${p.isReady ? "bg-green-400" : "bg-yellow-400"}`} />
-              <span className="text-xs font-bold whitespace-nowrap">
+              <div className={`w-1.5 h-1.5 rounded-full ${p.isReady ? "bg-green-400" : "bg-yellow-400"}`} />
+              <span className="text-[11px] font-black uppercase truncate max-w-[80px]">
                 {p.id === localPlayerId ? "SAYA" : p.name.split(' ')[0]}
               </span>
             </button>
@@ -195,14 +259,21 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
         </div>
       </footer>
 
-      {/* Winner Modal */}
+      {/* WINNER OVERLAY */}
       {winnerId && (
-        <div className="fixed inset-0 z-[100] bg-slate-950/95 backdrop-blur-xl flex items-center justify-center p-6 text-center animate-in fade-in duration-500">
-          <div>
-            <p className="text-pink-500 font-black tracking-widest uppercase mb-2">Game Over</p>
-            <h1 className="text-6xl font-black text-yellow-400 mb-4">BINGO!</h1>
-            <p className="text-xl mb-10 text-white/80"><span className="text-white font-bold">{players.find(p => p.id === winnerId)?.name}</span> memenangkan ronde ini!</p>
-            <button onClick={() => window.location.href = '/'} className="w-full py-4 bg-pink-600 rounded-2xl font-black tracking-widest shadow-2xl shadow-pink-900/40">KELUAR</button>
+        <div className="fixed inset-0 z-[100] bg-slate-950/95 backdrop-blur-2xl flex items-center justify-center p-8 text-center animate-in fade-in duration-500">
+          <div className="max-w-xs">
+            <p className="text-pink-500 font-black tracking-widest uppercase text-xs mb-2">Round Finished</p>
+            <h1 className="text-7xl font-black text-yellow-400 mb-4 drop-shadow-[0_0_20px_rgba(250,204,21,0.3)]">BINGO!</h1>
+            <p className="text-xl font-bold text-white mb-10">
+              👑 <span className="text-yellow-400 underline">{players.find(p => p.id === winnerId)?.name}</span> Menang!
+            </p>
+            <button 
+              onClick={() => window.location.href = '/'} 
+              className="w-full py-5 bg-gradient-to-r from-pink-600 to-rose-500 rounded-2xl font-black tracking-[0.2em] shadow-2xl shadow-pink-900/40 transform active:scale-95 transition-all"
+            >
+              MAIN LAGI
+            </button>
           </div>
         </div>
       )}
