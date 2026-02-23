@@ -108,15 +108,15 @@ const handleReady = async () => {
 
   try {
     // 1. Update status ready diri sendiri
-    await supabase.from("players").update({ is_ready: true, board: finalBoard }).eq("id", localPlayerId);
+    await supabase.from("players").update({ isReady: true, board: finalBoard }).eq("id", localPlayerId);
 
     // 2. Ambil semua player untuk cek apakah semua sudah ready
     const { data: allP } = await supabase.from("players")
-      .select("id, created_at, is_ready")
+      .select("id, created_at, isReady")
       .eq("room_id", roomId)
       .order('created_at', { ascending: true }); // Urutkan berdasarkan waktu join
 
-    if (allP && allP.length > 0 && allP.every(p => p.is_ready)) {
+    if (allP && allP.length > 0 && allP.every(p => p.isReady)) {
       // 3. Jika semua ready, tentukan player pertama (indeks 0 adalah yang paling pertama join)
       await supabase.from("rooms").update({ 
         status: "PLAYING",
