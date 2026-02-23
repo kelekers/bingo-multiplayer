@@ -25,7 +25,23 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
     if (localPlayerId && !viewingPlayerId) setViewingPlayerId(localPlayerId);
   }, [localPlayerId, viewingPlayerId]);
 
-  // Data board yang sedang aktif ditampilkan
+  // PENTING: Mencegah bug "State Bocor" saat user menekan tombol Back di browser
+  useEffect(() => {
+    return () => {
+      useGameStore.setState({
+        board: Array(25).fill(null),
+        status: 'LOBBY',
+        numbersPicked: [],
+        winnerId: null,
+        currentPlayerTurnId: null,
+        players: []
+      });
+    };
+  }, []);
+
+  const isLocalReady = useMemo(() => players.find(p => p.id === localPlayerId)?.isReady || false, [players, localPlayerId]);
+  const isBoardFull = useMemo(() => board.filter(n => n !== null).length === 25, [board]);
+
   const activeDisplayBoard = useMemo(() => {
     const targetPlayer = players.find(p => p.id === viewingPlayerId);
     if (!targetPlayer) return Array(25).fill(null);
@@ -33,7 +49,6 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
     return Array.isArray(targetBoard) && targetBoard.length === 25 ? targetBoard : Array(25).fill(null);
   }, [players, viewingPlayerId, localPlayerId, board]);
 
-  // Kalkulasi B-I-N-G-O (Hanya angka valid yang diperiksa)
   const activeLines = useMemo(() => {
     const indices = activeDisplayBoard
       .map((num, idx) => (num !== null && numbersPicked.includes(num as number) ? idx : -1))
@@ -95,11 +110,11 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
     return () => { supabase.removeChannel(channel); };
   }, [roomId, localPlayerId, router]);
 
-  // 2. SAFETY GUARD: Mengisi board otomatis jika game mulai mendadak
+  // 2. SAFETY GUARD
   useEffect(() => {
     const checkEmptyBoard = async () => {
-      const isBoardEmpty = board.filter(n => n !== null).length === 0;
-      if (status === "PLAYING" && isBoardEmpty && localPlayerId) {
+      const isBoardNotFull = board.filter(n => n !== null).length < 25;
+      if (status === "PLAYING" && isBoardNotFull && localPlayerId) {
         const autoBoard = Array.from({ length: 25 }, (_, i) => i + 1).sort(() => Math.random() - 0.5);
         useGameStore.setState({ board: autoBoard });
         await supabase.from("players").update({ "isReady": true, board: autoBoard }).eq("id", localPlayerId);
@@ -108,25 +123,7 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
     checkEmptyBoard();
   }, [status, localPlayerId, board]);
 
-  // 3. LOGIKA MULAI PERMAINAN (Observer Pattern)
-  useEffect(() => {
-    if (status === "LOBBY" || status === "SETUP") {
-      const totalPlayers = players.length;
-      const readyPlayers = players.filter(p => p.isReady).length;
-
-      if (totalPlayers > 1 && readyPlayers === totalPlayers) {
-        const sortedPlayers = [...players].sort((a, b) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime());
-        if (sortedPlayers[0].id === localPlayerId) {
-          supabase.from("rooms")
-            .update({ status: "PLAYING", "currentPlayerTurnId": sortedPlayers[0].id })
-            .eq("id", roomId)
-            .then();
-        }
-      }
-    }
-  }, [players, status, localPlayerId, roomId]);
-
-  // 4. CEK KEMENANGAN OTOMATIS
+  // 3. CEK KEMENANGAN
   const myLines = useMemo(() => {
     const indices = board.map((num, idx) => (numbersPicked.includes(num as number) ? idx : -1)).filter(idx => idx !== -1);
     return checkBingoLines(indices);
@@ -138,20 +135,33 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
     }
   }, [myLines, status, winnerId, localPlayerId, roomId]);
 
-  // 5. HANDLERS
+  // 4. HANDLERS
   const handleReady = async () => {
-    if (!localPlayerId || isUpdating) return;
+    if (!localPlayerId || isUpdating || !isBoardFull || isLocalReady) return;
     setIsUpdating(true);
-
-    const isFull = board.filter(n => n !== null).length === 25;
-    const finalBoard = isFull ? board : Array.from({ length: 25 }, (_, i) => i + 1).sort(() => Math.random() - 0.5);
-
-    useGameStore.setState({ board: finalBoard });
 
     try {
       await supabase.from("players")
-        .update({ "isReady": true, board: finalBoard })
+        .update({ "isReady": true, board: board })
         .eq("id", localPlayerId);
+
+      const { data: allPlayers } = await supabase
+        .from("players")
+        .select('id, "isReady", created_at')
+        .eq("room_id", roomId);
+
+      if (allPlayers) {
+        const totalPlayers = allPlayers.length;
+        const readyCount = allPlayers.filter(p => p.isReady).length;
+
+        if (totalPlayers > 1 && readyCount === totalPlayers) {
+          const sorted = [...allPlayers].sort((a, b) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime());
+          await supabase.from("rooms").update({ 
+            status: "PLAYING", 
+            "currentPlayerTurnId": sorted[0].id 
+          }).eq("id", roomId);
+        }
+      }
     } catch (err) {
       console.error("Gagal sinkronisasi siap:", err);
     } finally {
@@ -161,6 +171,7 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
 
   const handleCellClick = async (num: number, index: number) => {
     if (status === "SETUP" || status === "LOBBY") {
+      if (isLocalReady) return; 
       fillCell(index);
     } else if (status === "PLAYING") {
       if (currentPlayerTurnId !== localPlayerId || viewingPlayerId !== localPlayerId) return;
@@ -174,10 +185,22 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
     }
   };
 
+  const handleLeaveRoom = () => {
+    useGameStore.setState({
+      board: Array(25).fill(null),
+      status: 'LOBBY',
+      numbersPicked: [],
+      winnerId: null,
+      currentPlayerTurnId: null,
+      players: []
+    });
+    router.push('/');
+  };
+
   return (
     <div className="min-h-[100dvh] bg-slate-50 text-slate-900 flex flex-col font-sans relative overflow-hidden selection:bg-blue-100 selection:text-blue-900">
       
-      {/* HEADER: Progress B-I-N-G-O & Room Code - Clean White */}
+      {/* HEADER */}
       <header className="relative z-10 p-4 px-6 flex justify-between items-center bg-white/80 backdrop-blur-xl border-b border-slate-200 shadow-sm">
         <div className="flex flex-col">
           <span className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em] leading-none mb-1">Arena Code</span>
@@ -202,7 +225,7 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
       {/* MAIN CONTENT */}
       <main className="relative z-10 flex-1 flex flex-col items-center p-4 sm:p-6 overflow-y-auto no-scrollbar">
         
-        {/* Status Indicator (Clean Pill Style) */}
+        {/* Status Indicator */}
         <div className="w-full max-w-sm mb-6">
           {status === "PLAYING" && !winnerId && (
             <div className={`text-center py-3 px-4 rounded-xl border transition-all duration-500 
@@ -226,17 +249,23 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
           )}
 
           {(status === "LOBBY" || status === "SETUP") && (
-            <div className="flex flex-col items-center gap-4">
-              {players.find(p => p.id === localPlayerId)?.isReady ? (
-                <div className="px-5 py-2.5 bg-blue-50 border border-blue-100 rounded-full shadow-sm">
-                  <p className="text-blue-700 text-xs font-bold animate-pulse uppercase tracking-wider">
-                    Menunggu Lawan Siap ({players.filter(p => p.isReady).length}/{Math.max(2, players.length)})
+            <div className="flex flex-col items-center gap-4 min-h-[40px]">
+              {isLocalReady ? (
+                <div className="px-5 py-2.5 bg-blue-50 border border-blue-100 rounded-full shadow-sm text-center">
+                  <p className="text-blue-700 text-xs font-bold animate-pulse uppercase tracking-wider mb-1">
+                    Menunggu Semua Pemain Siap
+                  </p>
+                  <p className="text-blue-500/80 text-[10px] font-bold">
+                    ({players.filter(p => p.isReady).length}/{Math.max(2, players.length)} Terkunci)
                   </p>
                 </div>
               ) : (
-                <p className="text-slate-500 text-xs font-semibold uppercase tracking-wider text-center">
-                  Atur formasimu dan klik siap.
-                </p>
+                <div className="text-center">
+                  <p className="text-slate-500 text-xs font-semibold uppercase tracking-wider">
+                    Ketuk kotak untuk mengisi angka manual.
+                  </p>
+                  <p className="text-slate-400 text-[10px] mt-1 italic">Hingga 5 Pemain • Game mulai saat semua SIAP</p>
+                </div>
               )}
             </div>
           )}
@@ -252,22 +281,24 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
           </div>
         </div>
 
-        {/* 5x5 BINGO GRID - Minimalist Design */}
+        {/* 5x5 BINGO GRID */}
         <div className="w-full max-w-[min(90vw,420px)] aspect-square grid grid-cols-5 gap-2 sm:gap-3">
           {activeDisplayBoard.map((num, index) => {
             const isPicked = num !== null && numbersPicked.includes(num as number);
             const isMyBoard = viewingPlayerId === localPlayerId;
             const targetPlayerReady = players.find(p => p.id === viewingPlayerId)?.isReady;
-            
-            // CEGAH EXPLOIT: Jika lihat board lawan tapi lawan belum isReady, sembunyikan!
             const showSecret = !isMyBoard && !targetPlayerReady;
             const displayContent = showSecret ? "?" : num;
+
+            const isGridDisabled = !isMyBoard || status === "FINISHED" || showSecret || 
+                                   (status === "PLAYING" && currentPlayerTurnId !== localPlayerId) || 
+                                   (status !== "PLAYING" && isLocalReady);
 
             return (
               <button 
                 key={index} 
                 onClick={() => handleCellClick(num as number, index)}
-                disabled={!isMyBoard || status === "FINISHED" || showSecret || (status === "PLAYING" && currentPlayerTurnId !== localPlayerId)}
+                disabled={isGridDisabled}
                 className={`relative aspect-square flex items-center justify-center text-xl sm:text-2xl font-black rounded-xl sm:rounded-2xl border transition-all duration-200 transform active:scale-[0.95]
                   ${isPicked 
                     ? "bg-blue-600 border-blue-700 shadow-inner text-white" 
@@ -286,29 +317,39 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
           })}
         </div>
 
-        {/* SETUP ACTIONS - Minimalist Buttons */}
+        {/* SETUP ACTIONS */}
         {status !== "PLAYING" && status !== "FINISHED" && (
           <div className="mt-8 flex gap-3 w-full max-w-sm">
             <button 
               onClick={randomizeBoard} 
-              className="flex-1 py-4 bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 rounded-xl font-bold shadow-sm transition-all active:scale-[0.98]"
+              disabled={isLocalReady}
+              className="flex-1 py-4 bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 rounded-xl font-bold shadow-sm transition-all active:scale-[0.98] disabled:opacity-40 disabled:cursor-not-allowed"
             >
               Acak
             </button>
             <button 
               onClick={handleReady} 
-              disabled={isUpdating || players.find(p => p.id === localPlayerId)?.isReady}
-              className="flex-[2] py-4 rounded-xl font-bold bg-slate-900 text-white shadow-md hover:bg-slate-800 transition-all active:scale-[0.98] disabled:opacity-40 disabled:bg-slate-500 disabled:shadow-none"
+              disabled={isUpdating || isLocalReady || !isBoardFull}
+              className={`flex-[2] py-4 rounded-xl font-bold text-white shadow-md transition-all active:scale-[0.98] disabled:opacity-50 disabled:shadow-none ${
+                isLocalReady || !isBoardFull ? 'bg-slate-400' : 'bg-slate-900 hover:bg-slate-800'
+              }`}
             >
-              {isUpdating ? "Memproses..." : players.find(p => p.id === localPlayerId)?.isReady ? "MENUNGGU..." : "SAYA SIAP"}
+              {isUpdating ? "Memproses..." : isLocalReady ? "TERKUNCI" : !isBoardFull ? "ISI PAPAN DULU" : "SAYA SIAP"}
             </button>
           </div>
         )}
       </main>
 
-      {/* BOTTOM TABS: Pemilih Board (Clean Pills) */}
+      {/* FOOTER: Player Switcher */}
       <footer className="relative z-10 bg-white/90 backdrop-blur-xl border-t border-slate-200 p-4 pb-8 sm:pb-6 shadow-[0_-10px_40px_rgba(0,0,0,0.03)]">
-        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3 text-center">Ganti Radar Pemain</p>
+        <div className="flex justify-between items-center mb-3 max-w-2xl mx-auto px-2">
+          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Ganti Radar Pemain</p>
+          {/* Tombol Keluar Darurat (Jika game stuck/batal main) */}
+          <button onClick={handleLeaveRoom} className="text-[10px] font-bold text-red-500 uppercase tracking-widest hover:text-red-600 transition-colors">
+            Tinggalkan Room
+          </button>
+        </div>
+        
         <div className="flex gap-2.5 overflow-x-auto pb-2 no-scrollbar px-2 max-w-2xl mx-auto">
           {players.map((p) => {
             const isActive = viewingPlayerId === p.id;
@@ -333,25 +374,22 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
         </div>
       </footer>
 
-      {/* WINNER OVERLAY (Clean & Professional Display) */}
+      {/* WINNER OVERLAY */}
       {winnerId && (
         <div className="fixed inset-0 z-[100] bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-6 text-center animate-in fade-in duration-500">
           <div className="w-full max-w-sm bg-white p-10 rounded-[2rem] border border-slate-100 shadow-2xl relative overflow-hidden">
-            
             <p className="text-slate-400 font-bold tracking-[0.2em] uppercase text-xs mb-2">Permainan Selesai</p>
             <h1 className="text-5xl font-black text-slate-900 mb-6 tracking-tight">
               BINGO<span className="text-blue-600">!</span>
             </h1>
-            
             <div className="inline-flex items-center gap-2 bg-slate-50 border border-slate-200 px-6 py-3 rounded-xl mb-10">
               <span className="text-xl">🏆</span>
               <p className="text-sm font-bold text-slate-800 uppercase tracking-wider">
                 <span className="text-blue-600">{players.find(p => p.id === winnerId)?.name}</span> Menang
               </p>
             </div>
-            
             <button 
-              onClick={() => window.location.href = '/'} 
+              onClick={handleLeaveRoom} 
               className="w-full py-4 bg-slate-900 hover:bg-slate-800 rounded-xl font-bold text-white shadow-md active:scale-[0.98] transition-all uppercase tracking-widest text-sm"
             >
               Keluar Arena
