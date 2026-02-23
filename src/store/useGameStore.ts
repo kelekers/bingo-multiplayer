@@ -1,14 +1,15 @@
-// src/store/useGameStore.ts
 import { create } from 'zustand';
+import { persist } from 'zustand/middleware';
 import { GameState, GameStatus, Player } from '@/types';
 
 interface GameStore extends GameState {
   // --- State Tambahan ---
-  board: (number | null)[]; // Board 5x5 milik user lokal
+  board: (number | null)[];
   localPlayerId: string | null;
+  playerName: string; // Menyimpan nama user lokal
 
   // --- Actions ---
-  setPlayerName: (name: string) => void;
+  setPlayerInfo: (name: string) => void; // Gabungan set nama & ID
   setRoomId: (id: string) => void;
   setGameStatus: (status: GameStatus) => void;
   setBoard: (newBoard: (number | null)[]) => void;
@@ -22,79 +23,85 @@ interface GameStore extends GameState {
   resetGame: () => void;
 }
 
-export const useGameStore = create<GameStore>((set) => ({
-  // --- Initial State ---
-  roomId: null,
-  status: 'LOBBY',
-  players: [],
-  currentPlayerTurnId: null,
-  numbersPicked: [],
-  winnerId: null,
-  board: Array(25).fill(null),
-  localPlayerId: null,
+export const useGameStore = create<GameStore>()(
+  persist(
+    (set) => ({
+      // --- Initial State ---
+      roomId: null,
+      status: 'LOBBY',
+      players: [],
+      currentPlayerTurnId: null,
+      numbersPicked: [],
+      winnerId: null,
+      board: Array(25).fill(null),
+      localPlayerId: null,
+      playerName: "",
 
-  // --- Actions ---
+      // --- Actions ---
 
-  // 1. Inisialisasi Player di awal
-  setPlayerName: (name: string) => {
-    const newId = Math.random().toString(36).substring(2, 9);
-    set({
-      localPlayerId: newId,
-      // Kita set player pertama kali, detail lainnya akan diupdate oleh Supabase
-      players: [{ 
-        id: newId, 
-        name, 
-        isHost: false, 
-        isReady: false, 
-        board: [], 
-        checkedIndices: [] 
-      }]
-    });
-  },
+      // Fungsi krusial: Membuat ID hanya jika belum punya
+      setPlayerInfo: (name: string) => set((state) => {
+        const existingId = state.localPlayerId;
+        const newId = existingId || Math.random().toString(36).substring(2, 9);
+        
+        return {
+          localPlayerId: newId,
+          playerName: name,
+          // Inisialisasi list players lokal dengan diri sendiri
+          players: [{ 
+            id: newId, 
+            name, 
+            isHost: false, 
+            isReady: false, 
+            board: [], 
+            checkedIndices: [] 
+          }]
+        };
+      }),
 
-  setRoomId: (id: string) => set({ roomId: id }),
+      setRoomId: (id: string) => set({ roomId: id }),
 
-  setGameStatus: (status: GameStatus) => set({ status }),
+      setGameStatus: (status: GameStatus) => set({ status }),
 
-  setBoard: (newBoard) => set({ board: newBoard }),
+      setBoard: (newBoard) => set({ board: newBoard }),
 
-  // 2. Logika Fase SETUP (Mengisi angka 1-25)
-  fillCell: (index: number) => set((state) => {
-    if (state.board[index] !== null) return state;
+      fillCell: (index: number) => set((state) => {
+        if (state.board[index] !== null) return state;
+        const filledNumbers = state.board.filter((n): n is number => n !== null);
+        const nextNumber = filledNumbers.length + 1;
+        if (nextNumber > 25) return state;
 
-    const filledNumbers = state.board.filter((n): n is number => n !== null);
-    const nextNumber = filledNumbers.length + 1;
+        const newBoard = [...state.board];
+        newBoard[index] = nextNumber;
+        return { board: newBoard };
+      }),
 
-    if (nextNumber > 25) return state;
+      randomizeBoard: () => {
+        const shuffled = Array.from({ length: 25 }, (_, i) => i + 1)
+          .sort(() => Math.random() - 0.5);
+        set({ board: shuffled });
+      },
 
-    const newBoard = [...state.board];
-    newBoard[index] = nextNumber;
-    
-    return { board: newBoard };
-  }),
+      setNumbersPicked: (numbers: number[]) => set({ numbersPicked: numbers }),
 
-  randomizeBoard: () => {
-    const shuffled = Array.from({ length: 25 }, (_, i) => i + 1)
-      .sort(() => Math.random() - 0.5);
-    set({ board: shuffled });
-  },
+      updatePlayers: (players: Player[]) => set({ players }),
 
-  // 3. Logika Fase PLAYING (Sinkronisasi Real-time)
-  
-  // Update daftar angka yang sudah dipilih secara global (dari DB)
-  setNumbersPicked: (numbers: number[]) => set({ numbersPicked: numbers }),
+      setWinner: (winnerId: string) => set({ winnerId, status: 'FINISHED' }),
 
-  // Update list pemain (untuk melihat siapa yang sudah ready atau siapa yang menang)
-  updatePlayers: (players: Player[]) => set({ players }),
-
-  setWinner: (winnerId: string) => set({ winnerId, status: 'FINISHED' }),
-
-  // 4. Reset Game
-  resetGame: () => set({
-    status: 'LOBBY',
-    numbersPicked: [],
-    winnerId: null,
-    currentPlayerTurnId: null,
-    board: Array(25).fill(null)
-  }),
-}));
+      resetGame: () => set({
+        status: 'LOBBY',
+        numbersPicked: [],
+        winnerId: null,
+        currentPlayerTurnId: null,
+        board: Array(25).fill(null)
+      }),
+    }),
+    {
+      name: 'bingo-storage', // Data disimpan di LocalStorage browser
+      partialize: (state) => ({ 
+        localPlayerId: state.localPlayerId, 
+        playerName: state.playerName 
+      }), // Hanya simpan ID dan Nama agar tidak konflik saat ganti room
+    }
+  )
+);
