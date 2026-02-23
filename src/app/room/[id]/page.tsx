@@ -115,28 +115,28 @@ const activeDisplayBoard = useMemo(() => {
   }, [board, numbersPicked]);
 
   // Safety Guard: Mengisi board otomatis jika game mulai mendadak
-useEffect(() => {
-  const checkEmptyBoard = async () => {
-    // Jika status sudah PLAYING tapi board lokal masih kosong
-    const isBoardEmpty = board.filter(n => n !== null).length === 0;
-    
-    if (status === "PLAYING" && isBoardEmpty && localPlayerId) {
-      const autoBoard = Array.from({ length: 25 }, (_, i) => i + 1).sort(() => Math.random() - 0.5);
-      
-      // Update lokal
-      useGameStore.setState({ board: autoBoard });
-      
-      // Update database agar pemain lain bisa melihat board kita (Fitur Intip)
-      await supabase.from("players")
-        .update({ isReady: true, board: autoBoard })
-        .eq("id", localPlayerId);
-      
-      console.log("Board diisi otomatis karena game sudah dimulai.");
-    }
-  };
+  useEffect(() => {
+    const checkEmptyBoard = async () => {
+        // Jika status sudah PLAYING tapi board lokal masih kosong
+        const isBoardEmpty = board.filter(n => n !== null).length === 0;
+        
+        if (status === "PLAYING" && isBoardEmpty && localPlayerId) {
+        const autoBoard = Array.from({ length: 25 }, (_, i) => i + 1).sort(() => Math.random() - 0.5);
+        
+        // Update lokal
+        useGameStore.setState({ board: autoBoard });
+        
+        // Update database agar pemain lain bisa melihat board kita (Fitur Intip)
+        await supabase.from("players")
+            .update({ isReady: true, board: autoBoard })
+            .eq("id", localPlayerId);
+        
+        console.log("Board diisi otomatis karena game sudah dimulai.");
+        }
+    };
 
-  checkEmptyBoard();
-}, [status, localPlayerId, board]);
+    checkEmptyBoard();
+  }, [status, localPlayerId, board]);
 
   useEffect(() => {
     if (myLines >= 5 && status === "PLAYING" && !winnerId) {
@@ -152,31 +152,37 @@ const handleReady = async () => {
   if (!localPlayerId || isUpdating) return;
   setIsUpdating(true);
 
-  // 1. Siapkan board (jika belum penuh, acak otomatis)
+  // 1. Tentukan board (jika belum penuh, acak otomatis)
   const isFull = board.filter(n => n !== null).length === 25;
   const finalBoard = isFull ? board : Array.from({ length: 25 }, (_, i) => i + 1).sort(() => Math.random() - 0.5);
 
-  // Update state lokal agar tidak terlihat kosong di layar sendiri
+  // Update state lokal seketika agar UI tidak lag
   useGameStore.setState({ board: finalBoard });
 
   try {
-    // 2. Update diri sendiri ke Database
+    // 2. Update status diri sendiri di Database
     await supabase.from("players")
       .update({ isReady: true, board: finalBoard })
       .eq("id", localPlayerId);
 
-    // 3. Ambil ulang semua pemain yang ada di room ini dari DB
-    const { data: allP, error } = await supabase
+    // 3. Ambil data TERBARU semua pemain di room ini dari DB
+    const { data: allPlayers, error } = await supabase
       .from("players")
       .select('id, "isReady"')
       .eq("room_id", roomId);
 
     if (error) throw error;
 
-    // 4. LOGIKA MULAI: Hanya jika pemain > 1 DAN semuanya sudah isReady
-    if (allP && allP.length > 1 && allP.every(p => p.isReady)) {
-      // Ambil siapa yang paling pertama join untuk giliran awal
-      const { data: first } = await supabase.from("players")
+    // 4. LOGIKA KRUSIAL: Cek apakah semua sudah siap?
+    const totalPlayers = allPlayers?.length || 0;
+    const readyCount = allPlayers?.filter(p => p.isReady).length || 0;
+
+    // Game baru dimulai JIKA:
+    // - Pemain lebih dari 1 (mencegah main sendirian)
+    // - Jumlah yang siap SAMA DENGAN total pemain di room
+    if (totalPlayers > 1 && readyCount === totalPlayers) {
+      // Tentukan giliran pertama (pemain yang join paling awal)
+      const { data: firstJoiner } = await supabase.from("players")
         .select("id")
         .eq("room_id", roomId)
         .order("created_at", { ascending: true })
@@ -186,14 +192,15 @@ const handleReady = async () => {
       await supabase.from("rooms")
         .update({ 
           status: "PLAYING",
-          currentPlayerTurnId: first?.id 
+          currentPlayerTurnId: firstJoiner?.id 
         })
         .eq("id", roomId);
-    } else if (allP && allP.length <= 1) {
-      alert("Menunggu pemain lain bergabung...");
+    } else {
+      // Jika belum semua siap, biarkan status tetap LOBBY/SETUP
+      console.log(`Menunggu: ${readyCount}/${totalPlayers} pemain siap.`);
     }
   } catch (err) {
-    console.error(err);
+    console.error("Gagal sinkronisasi siap:", err);
   } finally {
     setIsUpdating(false);
   }
@@ -243,20 +250,37 @@ const handleReady = async () => {
       {/* MAIN CONTENT: Status & Board */}
       <main className="flex-1 flex flex-col items-center p-4 overflow-y-auto no-scrollbar">
         
-        {/* Turn Indicator Overlay */}
+        {/* Status Indicator (Giliran atau Menunggu Siap) */}
         <div className="w-full max-w-sm mb-4">
-          {status === "PLAYING" && !winnerId && (
+        {/* 1. Jika SEDANG MAIN: Tampilkan Giliran */}
+        {status === "PLAYING" && !winnerId && (
             <div className={`text-center py-2.5 px-4 rounded-2xl border transition-all duration-300 ${currentPlayerTurnId === localPlayerId ? "bg-green-500/10 border-green-500/30 shadow-[0_0_20px_rgba(34,197,94,0.1)]" : "bg-white/5 border-white/5"}`}>
-              {currentPlayerTurnId === localPlayerId ? (
-                <p className="text-green-400 font-black text-sm animate-pulse tracking-tight">🚀 GILIRAN KAMU! KLIK ANGKA</p>
-              ) : (
+            {currentPlayerTurnId === localPlayerId ? (
+                <p className="text-green-400 font-black text-sm animate-pulse tracking-tight">🚀 GILIRAN KAMU! KLIK SATU ANGKA</p>
+            ) : (
                 <p className="text-white/30 text-xs font-bold uppercase tracking-widest">
-                  Menunggu {players.find(p => p.id === currentPlayerTurnId)?.name}...
+                Menunggu {players.find(p => p.id === currentPlayerTurnId)?.name}...
                 </p>
-              )}
+            )}
             </div>
-          )}
-          {status !== "PLAYING" && <div className="flex justify-center"><Timer duration={30} onTimeUp={handleReady} /></div>}
+        )}
+
+        {/* 2. Jika BELUM MAIN: Tampilkan Status Menunggu & Timer */}
+        {(status === "LOBBY" || status === "SETUP") && (
+            <div className="flex flex-col items-center gap-3">
+            {/* Tampilkan teks ini hanya jika pemain lokal sudah klik SAYA SIAP */}
+            {players.find(p => p.id === localPlayerId)?.isReady && (
+                <p className="text-[10px] font-black text-pink-500 uppercase tracking-[0.2em] animate-pulse">
+                Menunggu Pemain Lain... ({players.filter(p => p.isReady).length}/{players.length})
+                </p>
+            )}
+            
+            {/* Timer tetap muncul di sini */}
+            <div className="flex justify-center">
+                <Timer duration={30} onTimeUp={handleReady} />
+            </div>
+            </div>
+        )}
         </div>
 
         {/* Info Pemilik Board */}
