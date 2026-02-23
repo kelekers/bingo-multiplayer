@@ -152,36 +152,43 @@ const handleReady = async () => {
   if (!localPlayerId || isUpdating) return;
   setIsUpdating(true);
 
-  // 1. Tentukan board (jika belum penuh, acak otomatis)
+  // 1. Siapkan board (jika belum penuh, acak otomatis)
   const isFull = board.filter(n => n !== null).length === 25;
   const finalBoard = isFull ? board : Array.from({ length: 25 }, (_, i) => i + 1).sort(() => Math.random() - 0.5);
 
-  // Update state lokal seketika agar UI tidak lag
+  // Update state lokal agar tampilan langsung berubah
   useGameStore.setState({ board: finalBoard });
 
   try {
-    // 2. Update status diri sendiri di Database
-    await supabase.from("players")
-      .update({ isReady: true, board: finalBoard })
+    // 2. Update status isReady saya ke Database (Gunakan tanda kutip jika kolom di SQL pakai CamelCase)
+    const { error: updateError } = await supabase.from("players")
+      .update({ 
+        "isReady": true, 
+        board: finalBoard 
+      })
       .eq("id", localPlayerId);
 
-    // 3. Ambil data TERBARU semua pemain di room ini dari DB
-    const { data: allPlayers, error } = await supabase
+    if (updateError) throw updateError;
+
+    // 3. AMBIL DATA TERBARU SEMUA PEMAIN DARI DATABASE (PENTING!)
+    // Kita tidak boleh pakai data dari Store karena mungkin belum sinkron
+    const { data: allPlayers, error: fetchError } = await supabase
       .from("players")
       .select('id, "isReady"')
       .eq("room_id", roomId);
 
-    if (error) throw error;
+    if (fetchError) throw fetchError;
 
-    // 4. LOGIKA KRUSIAL: Cek apakah semua sudah siap?
-    const totalPlayers = allPlayers?.length || 0;
+    // 4. LOGIKA VALIDASI MULAI GAME
+    const totalInRoom = allPlayers?.length || 0;
     const readyCount = allPlayers?.filter(p => p.isReady).length || 0;
 
-    // Game baru dimulai JIKA:
-    // - Pemain lebih dari 1 (mencegah main sendirian)
-    // - Jumlah yang siap SAMA DENGAN total pemain di room
-    if (totalPlayers > 1 && readyCount === totalPlayers) {
-      // Tentukan giliran pertama (pemain yang join paling awal)
+    // Game HANYA MULAI jika:
+    // - Pemain minimal 2 orang (mencegah main sendirian)
+    // - Semua orang yang ada di tabel 'players' untuk room ini statusnya isReady = true
+    if (totalInRoom > 1 && readyCount === totalInRoom) {
+      
+      // Tentukan siapa yang giliran pertama (berdasarkan siapa yang join paling awal)
       const { data: firstJoiner } = await supabase.from("players")
         .select("id")
         .eq("room_id", roomId)
@@ -189,18 +196,21 @@ const handleReady = async () => {
         .limit(1)
         .single();
 
+      // Update Room menjadi PLAYING
       await supabase.from("rooms")
         .update({ 
           status: "PLAYING",
-          currentPlayerTurnId: firstJoiner?.id 
+          "currentPlayerTurnId": firstJoiner?.id 
         })
         .eq("id", roomId);
+
     } else {
-      // Jika belum semua siap, biarkan status tetap LOBBY/SETUP
-      console.log(`Menunggu: ${readyCount}/${totalPlayers} pemain siap.`);
+      // Jika belum memenuhi syarat, cukup beri notifikasi log atau alert (opsional)
+      console.log(`Menunggu pemain lain: ${readyCount}/${totalInRoom} siap.`);
     }
   } catch (err) {
     console.error("Gagal sinkronisasi siap:", err);
+    alert("Koneksi bermasalah, coba klik Siap lagi.");
   } finally {
     setIsUpdating(false);
   }
@@ -289,6 +299,23 @@ const handleReady = async () => {
             {viewingPlayerId === localPlayerId ? "Papan Kamu" : `Mengintip Papan: ${players.find(p => p.id === viewingPlayerId)?.name}`}
           </p>
         </div>
+
+        {/* Letakkan di dalam return, sebelum bagian grid board */}
+        {status !== "PLAYING" && players.length > 0 && (
+        <div className="mb-4 text-center">
+            {players.find(p => p.id === localPlayerId)?.isReady ? (
+            <div className="px-4 py-2 bg-pink-500/20 border border-pink-500/30 rounded-xl">
+                <p className="text-pink-400 text-xs font-black animate-pulse uppercase tracking-widest">
+                Menunggu Lawan Siap... ({players.filter(p => p.isReady).length} / {players.length})
+                </p>
+            </div>
+            ) : (
+            <p className="text-white/30 text-[10px] font-bold uppercase tracking-widest">
+                Susun board kamu lalu klik siap!
+            </p>
+            )}
+        </div>
+        )}
 
         {/* 5x5 BINGO GRID */}
         <div className="w-full max-w-[min(90vw,420px)] aspect-square grid grid-cols-5 gap-2 sm:gap-3">
