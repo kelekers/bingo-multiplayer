@@ -9,14 +9,14 @@ export default function Lobby() {
   const [name, setName] = useState("");
   const [roomCode, setRoomCode] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  const [errorMsg, setErrorMsg] = useState(""); // Mengganti alert dengan UI Error modern
+  const [errorMsg, setErrorMsg] = useState(""); // Pengganti alert()
   
   const { setPlayerInfo, setRoomId } = useGameStore();
   const router = useRouter();
 
   const handleCreateRoom = async () => {
     setErrorMsg("");
-    if (!name.trim()) return setErrorMsg("Nama pemain wajib diisi.");
+    if (!name.trim()) return setErrorMsg("Silakan masukkan nama Anda.");
     setIsLoading(true);
 
     try {
@@ -37,7 +37,7 @@ export default function Lobby() {
       router.push(`/room/${newRoomId}`);
     } catch (error: any) {
       console.error(error);
-      setErrorMsg("Koneksi server terputus. Gagal membuat arena.");
+      setErrorMsg("Koneksi gagal. Silakan coba lagi.");
     } finally {
       setIsLoading(false);
     }
@@ -45,8 +45,8 @@ export default function Lobby() {
 
   const handleJoinRoom = async () => {
     setErrorMsg("");
-    if (!name.trim()) return setErrorMsg("Nama pemain wajib diisi.");
-    if (!roomCode.trim() || roomCode.length < 5) return setErrorMsg("Kode arena tidak valid.");
+    if (!name.trim()) return setErrorMsg("Silakan masukkan nama Anda.");
+    if (!roomCode.trim() || roomCode.length < 5) return setErrorMsg("Kode Arena tidak valid.");
     
     setIsLoading(true);
 
@@ -68,137 +68,120 @@ export default function Lobby() {
       router.push(`/room/${roomCode.toUpperCase()}`);
     } catch (error: any) {
       console.error(error);
-      setErrorMsg("Koneksi server terputus. Gagal bergabung.");
+      setErrorMsg("Gagal bergabung ke arena. Silakan coba lagi.");
     } finally {
       setIsLoading(false);
     }
   };
 
   return (
-    <main className="min-h-[100dvh] flex items-center justify-center bg-[#070B14] text-slate-200 p-4 font-sans relative overflow-hidden">
+    <main className="min-h-[100dvh] flex items-center justify-center bg-slate-50 text-slate-900 p-4 sm:p-6 font-sans selection:bg-blue-100 selection:text-blue-900">
       
-      {/* --- Ambient Background Glows --- */}
-      <div className="absolute top-[-10%] left-[-10%] w-96 h-96 bg-indigo-600/20 rounded-full blur-[120px] pointer-events-none"></div>
-      <div className="absolute bottom-[-10%] right-[-10%] w-[30rem] h-[30rem] bg-rose-600/10 rounded-full blur-[150px] pointer-events-none"></div>
-
-      <div className="w-full max-w-[420px] relative z-10">
+      {/* Container Utama - Clean White Card */}
+      <div className="w-full max-w-[400px] bg-white p-8 sm:p-10 rounded-[24px] shadow-[0_20px_40px_-15px_rgba(0,0,0,0.05)] border border-slate-100 relative">
         
-        {/* --- Header / Logo --- */}
-        <div className="text-center mb-10 space-y-2">
-          <div className="inline-flex items-center justify-center p-3 bg-white/5 rounded-2xl mb-2 border border-white/5 ring-1 ring-white/10 shadow-[0_0_30px_rgba(79,70,229,0.15)]">
-            <svg className="w-8 h-8 text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+        {/* Header / Logo */}
+        <div className="text-center mb-8">
+          <div className="inline-flex items-center justify-center w-12 h-12 bg-blue-50 text-blue-600 rounded-xl mb-4">
+            <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" />
             </svg>
           </div>
-          <h1 className="text-4xl sm:text-5xl font-black tracking-tight text-white">
-            BINGO<span className="text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 to-rose-400">55</span>
+          <h1 className="text-3xl font-black tracking-tight text-slate-900 mb-1">
+            BINGO<span className="text-blue-600">55</span>
           </h1>
-          <p className="text-sm font-medium text-slate-500 uppercase tracking-[0.2em]">Multiplayer Arena</p>
+          <p className="text-xs font-semibold text-slate-400 uppercase tracking-widest">
+            Multiplayer Arena
+          </p>
         </div>
 
-        {/* --- Main Card --- */}
-        <div className="bg-[#0B1120]/80 backdrop-blur-2xl p-6 sm:p-8 rounded-[2rem] shadow-2xl border border-slate-800/60 relative">
+        <div className="space-y-6">
           
-          {/* Garis atas dekoratif */}
-          <div className="absolute top-0 left-1/2 -translate-x-1/2 w-1/3 h-[2px] bg-gradient-to-r from-transparent via-indigo-500/50 to-transparent"></div>
+          {/* Error Message UI */}
+          {errorMsg && (
+            <div className="bg-red-50 text-red-600 px-4 py-3 rounded-xl flex items-start gap-3 text-sm animate-in fade-in slide-in-from-top-2 duration-300">
+              <svg className="w-5 h-5 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              <p className="font-medium leading-tight">{errorMsg}</p>
+            </div>
+          )}
 
-          <div className="space-y-6">
+          {/* Input Nama */}
+          <div className="space-y-2">
+            <label className="text-[11px] font-bold uppercase tracking-widest text-slate-500 ml-1">
+              Nama Pemain
+            </label>
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Masukkan namamu..."
+              disabled={isLoading}
+              className="w-full bg-slate-50/50 border border-slate-200 text-slate-900 rounded-xl px-4 py-3.5 focus:outline-none focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 transition-all placeholder:text-slate-400 font-medium disabled:opacity-50"
+            />
+          </div>
+
+          <div className="pt-2 flex flex-col gap-5">
             
-            {/* Error Notifier Modern */}
-            {errorMsg && (
-              <div className="bg-rose-500/10 border border-rose-500/20 text-rose-400 px-4 py-3 rounded-xl flex items-center gap-3 animate-in fade-in slide-in-from-top-2 duration-300">
-                <svg className="w-5 h-5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
-                <p className="text-sm font-medium">{errorMsg}</p>
-              </div>
-            )}
-
-            {/* Input Identitas */}
-            <div className="space-y-2">
-              <label className="text-[11px] font-bold uppercase tracking-widest text-slate-400 ml-1">Callsign / Nama</label>
-              <div className="relative">
-                <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
-                  <svg className="w-5 h-5 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+            {/* Tombol Buat Room (Primary Action) */}
+            <button
+              onClick={handleCreateRoom}
+              disabled={isLoading}
+              className="w-full bg-slate-900 hover:bg-slate-800 text-white font-semibold py-3.5 rounded-xl transition-all duration-200 active:scale-[0.98] disabled:opacity-50 flex items-center justify-center gap-2 shadow-sm"
+            >
+              {isLoading ? (
+                <svg className="w-5 h-5 animate-spin text-white/70" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+              ) : (
+                <>
+                  <svg className="w-5 h-5 opacity-70" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
                   </svg>
-                </div>
-                <input
-                  type="text"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  placeholder="Masukkan namamu..."
-                  disabled={isLoading}
-                  className="w-full bg-[#0F172A] border border-slate-700/50 rounded-2xl pl-11 pr-4 py-4 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all text-white placeholder:text-slate-600 font-medium"
-                />
-              </div>
+                  Buat Arena Baru
+                </>
+              )}
+            </button>
+
+            {/* Divider Clean */}
+            <div className="flex items-center gap-4 py-1">
+              <div className="h-px bg-slate-100 flex-1"></div>
+              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Atau Gabung</span>
+              <div className="h-px bg-slate-100 flex-1"></div>
             </div>
 
-            <div className="pt-2 flex flex-col gap-4">
-              
-              {/* Tombol Buat Room */}
-              <button
-                onClick={handleCreateRoom}
+            {/* Input & Button Join Room (Secondary Action) */}
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={roomCode}
+                onChange={(e) => setRoomCode(e.target.value.toUpperCase())}
+                placeholder="KODE"
                 disabled={isLoading}
-                className="group relative w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-4 rounded-2xl transition-all duration-300 active:scale-[0.98] disabled:opacity-70 disabled:active:scale-100 overflow-hidden"
+                maxLength={5}
+                className="w-1/3 bg-slate-50/50 border border-slate-200 rounded-xl px-2 py-3.5 text-center font-mono text-base font-bold text-slate-900 focus:outline-none focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 transition-all uppercase placeholder:text-slate-400 placeholder:font-sans placeholder:font-medium disabled:opacity-50"
+              />
+              <button
+                onClick={handleJoinRoom}
+                disabled={isLoading}
+                className="w-2/3 bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 font-semibold py-3.5 rounded-xl transition-all duration-200 active:scale-[0.98] disabled:opacity-50 shadow-sm flex items-center justify-center gap-2"
               >
-                <div className="absolute inset-0 w-full h-full bg-gradient-to-r from-transparent via-white/10 to-transparent -translate-x-full group-hover:animate-[shimmer_1.5s_infinite]"></div>
-                <div className="flex items-center justify-center gap-2">
-                  {isLoading ? (
-                    <span className="animate-pulse">Menghubungkan...</span>
-                  ) : (
-                    <>
-                      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 4v16m8-8H4" />
-                      </svg>
-                      <span>Buat Arena Baru</span>
-                    </>
-                  )}
-                </div>
+                Gabung Arena
+                <svg className="w-4 h-4 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 5l7 7m0 0l-7 7m7-7H3" />
+                </svg>
               </button>
-
-              {/* Pemisah */}
-              <div className="relative flex items-center py-2">
-                <div className="flex-grow border-t border-slate-800"></div>
-                <span className="flex-shrink-0 mx-4 text-[10px] font-bold text-slate-500 uppercase tracking-[0.2em]">Atau Gabung</span>
-                <div className="flex-grow border-t border-slate-800"></div>
-              </div>
-
-              {/* Input Gabung Room */}
-              <div className="flex gap-2 sm:gap-3">
-                <input
-                  type="text"
-                  value={roomCode}
-                  onChange={(e) => setRoomCode(e.target.value.toUpperCase())}
-                  placeholder="KODE"
-                  disabled={isLoading}
-                  maxLength={5}
-                  className="w-1/3 bg-[#0F172A] border border-slate-700/50 rounded-2xl px-2 py-4 text-center font-mono text-lg font-bold focus:outline-none focus:border-rose-500 focus:ring-1 focus:ring-rose-500 transition-all uppercase placeholder:text-slate-600 text-white"
-                />
-                <button
-                  onClick={handleJoinRoom}
-                  disabled={isLoading}
-                  className="w-2/3 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-white font-bold py-4 rounded-2xl transition-all duration-300 active:scale-[0.98] flex items-center justify-center gap-2 disabled:opacity-50"
-                >
-                  <span>Join Arena</span>
-                  <svg className="w-5 h-5 text-slate-400 group-hover:text-white transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 5l7 7m0 0l-7 7m7-7H3" />
-                  </svg>
-                </button>
-              </div>
-
             </div>
           </div>
         </div>
         
-        {/* --- Footer Kredensial --- */}
-        <div className="mt-8 text-center flex flex-col items-center gap-1">
-          <div className="flex items-center gap-2 text-[10px] text-slate-500 font-semibold tracking-widest uppercase">
-            <span className="w-2 h-2 rounded-full bg-green-500 shadow-[0_0_8px_#22c55e] animate-pulse"></span>
-            Server Online
-          </div>
-        </div>
-
+        {/* Footer Text */}
+        <p className="mt-10 text-center text-[10px] text-slate-400 font-semibold tracking-wider flex items-center justify-center gap-1.5">
+          <span className="relative flex h-2 w-2">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+            <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+          </span>
+          SISTEM ONLINE
+        </p>
       </div>
     </main>
   );
