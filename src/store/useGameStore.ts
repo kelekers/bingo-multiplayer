@@ -54,7 +54,8 @@ export const useGameStore = create<GameStore>()(
             isHost: false, 
             isReady: false, 
             board: [], 
-            checkedIndices: [] 
+            checkedIndices: [],
+            created_at: new Date().toISOString()
           }]
         };
       }),

@@ -7,6 +7,7 @@ export interface Player {
   isReady: boolean;
   board: number[];
   checkedIndices: number[]; // Index kotak yang sudah dicoret (0-24)
+  created_at: string; // Timestamp saat pemain dibuat
 }
 
 export interface GameState {

@@ -72,9 +72,11 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
       .channel(`room-${roomId}`)
       .on("postgres_changes", { event: "UPDATE", schema: "public", table: "rooms", filter: `id=eq.${roomId}` }, 
         (payload) => {
-          setNumbersPicked(payload.new.numbers_picked || []);
-          if (payload.new.status !== status) setGameStatus(payload.new.status);
-          if (payload.new.winner_id) setWinner(payload.new.winner_id);
+        setNumbersPicked(payload.new.numbers_picked || []);
+        setGameStatus(payload.new.status);
+        setWinner(payload.new.winner_id);
+        // UPDATE INI: Masukkan current_turn_id ke store
+        useGameStore.setState({ currentPlayerTurnId: payload.new.current_turn_id });
         })
       .subscribe();
 
@@ -97,49 +99,74 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
   }, [linesCount, status, winnerId, localPlayerId, roomId]);
 
   // 3. HANDLER SAYA SIAP
-  const handleReady = async () => {
-    if (!localPlayerId || isUpdating) return;
-    setIsUpdating(true);
-    
-    // Jika board belum penuh, isi acak otomatis
-    const isFull = board.filter(n => n !== null).length === 25;
-    const finalBoard = isFull ? board : Array.from({ length: 25 }, (_, i) => i + 1).sort(() => Math.random() - 0.5);
+const handleReady = async () => {
+  if (!localPlayerId || isUpdating) return;
+  setIsUpdating(true);
+  
+  const isFull = board.filter(n => n !== null).length === 25;
+  const finalBoard = isFull ? board : Array.from({ length: 25 }, (_, i) => i + 1).sort(() => Math.random() - 0.5);
 
-    try {
-      // Update status diri sendiri di DB
-      const { error } = await supabase
-        .from("players")
-        .update({ is_ready: true, board: finalBoard })
-        .eq("id", localPlayerId);
+  try {
+    // 1. Update status ready diri sendiri
+    await supabase.from("players").update({ is_ready: true, board: finalBoard }).eq("id", localPlayerId);
 
-      if (error) throw error;
+    // 2. Ambil semua player untuk cek apakah semua sudah ready
+    const { data: allP } = await supabase.from("players")
+      .select("id, created_at, is_ready")
+      .eq("room_id", roomId)
+      .order('created_at', { ascending: true }); // Urutkan berdasarkan waktu join
 
-      // Cek apakah semua pemain dalam room sudah ready
-      const { data: allP } = await supabase.from("players").select("is_ready").eq("room_id", roomId);
-      if (allP && allP.length > 0 && allP.every(p => p.is_ready)) {
-        await supabase.from("rooms").update({ status: "PLAYING" }).eq("id", roomId);
-      }
-    } catch (err) {
-      console.error(err);
-      alert("Gagal mengirim status siap.");
-    } finally {
-      setIsUpdating(false);
+    if (allP && allP.length > 0 && allP.every(p => p.is_ready)) {
+      // 3. Jika semua ready, tentukan player pertama (indeks 0 adalah yang paling pertama join)
+      await supabase.from("rooms").update({ 
+        status: "PLAYING",
+        current_turn_id: allP[0].id 
+      }).eq("id", roomId);
     }
-  };
+  } catch (err) {
+    console.error(err);
+  } finally {
+    setIsUpdating(false);
+  }
+};
 
   // 4. HANDLER KLIK ANGKA
-  const handleCellClick = async (num: number, index: number) => {
-    if (status === "SETUP" || status === "LOBBY") {
-      fillCell(index);
-    } else if (status === "PLAYING") {
-      if (numbersPicked.includes(num)) return;
-      
-      const newPicked = [...numbersPicked, num];
-      await supabase.from("rooms")
-        .update({ numbers_picked: newPicked })
-        .eq("id", roomId);
+const handleCellClick = async (num: number, index: number) => {
+  // Ambil data room terbaru untuk cek giliran
+  const { data: roomNow } = await supabase.from("rooms").select("current_turn_id").eq("id", roomId).single();
+  
+  if (status === "SETUP" || status === "LOBBY") {
+    fillCell(index);
+  } 
+  else if (status === "PLAYING") {
+    // CEK: Apakah ini giliran saya?
+    if (roomNow?.current_turn_id !== localPlayerId) {
+      alert("Sabar! Sekarang giliran " + players.find(p => p.id === roomNow?.current_turn_id)?.name);
+      return;
     }
-  };
+
+    if (numbersPicked.includes(num)) return;
+
+    // 1. Update angka yang dipilih
+    const newPicked = [...numbersPicked, num];
+    
+    // 2. Cari siapa pemain berikutnya
+    // Urutkan player berdasarkan waktu join
+    const sortedPlayers = [...players].sort((a, b) => 
+      new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime()
+    );
+    
+    const currentIndex = sortedPlayers.findIndex(p => p.id === localPlayerId);
+    const nextIndex = (currentIndex + 1) % sortedPlayers.length;
+    const nextPlayerId = sortedPlayers[nextIndex].id;
+
+    // 3. Update angka dan pindahkan giliran di database
+    await supabase.from("rooms").update({ 
+      numbers_picked: newPicked,
+      current_turn_id: nextPlayerId
+    }).eq("id", roomId);
+  }
+};
 
   return (
     <div className="min-h-screen bg-[#0f172a] text-white p-4 font-sans selection:bg-pink-500/30">
@@ -150,7 +177,7 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
         <div className="space-y-1">
           {players.map((p) => (
             <div key={p.id} className="bg-white/5 border border-white/10 p-3 rounded-2xl flex items-center gap-3 backdrop-blur-md">
-              <div className={`w-2 h-2 rounded-full ${p.is_ready ? "bg-green-500 shadow-[0_0_10px_#22c55e]" : "bg-yellow-500 animate-pulse"}`} />
+              <div className={`w-2 h-2 rounded-full ${p.isReady ? "bg-green-500 shadow-[0_0_10px_#22c55e]" : "bg-yellow-500 animate-pulse"}`} />
               <span className={`text-sm truncate ${p.id === localPlayerId ? "text-pink-400 font-bold" : "text-white/70"}`}>
                 {p.name} {p.id === localPlayerId && "(You)"}
               </span>
@@ -175,6 +202,19 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
             </div>
           ))}
         </div>
+
+        {/* Indikator Giliran */}
+        {status === "PLAYING" && !winnerId && (
+        <div className="mb-4 w-full bg-indigo-500/10 border border-indigo-500/20 py-2 px-4 rounded-xl text-center">
+            {players.find(p => p.id === useGameStore.getState().currentPlayerTurnId)?.id === localPlayerId ? (
+            <p className="text-green-400 font-bold animate-bounce">✨ Giliran Kamu! Klik satu angka.</p>
+            ) : (
+            <p className="text-white/50 text-sm">
+                Menunggu <span className="text-white font-bold">{players.find(p => p.id === useGameStore.getState().currentPlayerTurnId)?.name}</span> memilih angka...
+            </p>
+            )}
+        </div>
+        )}
 
         {/* Room Information */}
         <div className="w-full bg-white/5 border border-white/10 p-5 rounded-3xl flex justify-between items-center mb-8 shadow-2xl backdrop-blur-sm">
