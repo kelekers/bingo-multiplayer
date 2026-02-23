@@ -114,6 +114,30 @@ const activeDisplayBoard = useMemo(() => {
     return checkBingoLines(indices);
   }, [board, numbersPicked]);
 
+  // Safety Guard: Mengisi board otomatis jika game mulai mendadak
+useEffect(() => {
+  const checkEmptyBoard = async () => {
+    // Jika status sudah PLAYING tapi board lokal masih kosong
+    const isBoardEmpty = board.filter(n => n !== null).length === 0;
+    
+    if (status === "PLAYING" && isBoardEmpty && localPlayerId) {
+      const autoBoard = Array.from({ length: 25 }, (_, i) => i + 1).sort(() => Math.random() - 0.5);
+      
+      // Update lokal
+      useGameStore.setState({ board: autoBoard });
+      
+      // Update database agar pemain lain bisa melihat board kita (Fitur Intip)
+      await supabase.from("players")
+        .update({ isReady: true, board: autoBoard })
+        .eq("id", localPlayerId);
+      
+      console.log("Board diisi otomatis karena game sudah dimulai.");
+    }
+  };
+
+  checkEmptyBoard();
+}, [status, localPlayerId, board]);
+
   useEffect(() => {
     if (myLines >= 5 && status === "PLAYING" && !winnerId) {
       supabase.from("rooms")
@@ -128,29 +152,30 @@ const handleReady = async () => {
   if (!localPlayerId || isUpdating) return;
   setIsUpdating(true);
 
-  // 1. Tentukan board akhir
+  // 1. Siapkan board (jika belum penuh, acak otomatis)
   const isFull = board.filter(n => n !== null).length === 25;
   const finalBoard = isFull ? board : Array.from({ length: 25 }, (_, i) => i + 1).sort(() => Math.random() - 0.5);
 
-  // 2. UPDATE STATE LOKAL DULU (Penting!)
-  // Supaya tampilan di layar kamu sama dengan yang dikirim ke DB
-  if (!isFull) {
-    useGameStore.setState({ board: finalBoard });
-  }
+  // Update state lokal agar tidak terlihat kosong di layar sendiri
+  useGameStore.setState({ board: finalBoard });
 
   try {
-    // 3. Kirim ke Database
+    // 2. Update diri sendiri ke Database
     await supabase.from("players")
-      .update({ 
-        isReady: true, 
-        board: finalBoard // Pastikan kolom ini sesuai SQL (board)
-      })
+      .update({ isReady: true, board: finalBoard })
       .eq("id", localPlayerId);
 
-    // 4. Cek semua pemain (Gunakan fetchRoomData agar pData terbaru)
-    const { data: allP } = await supabase.from("players").select('id, "isReady"').eq("room_id", roomId);
-    
-    if (allP && allP.every(p => p.isReady)) {
+    // 3. Ambil ulang semua pemain yang ada di room ini dari DB
+    const { data: allP, error } = await supabase
+      .from("players")
+      .select('id, "isReady"')
+      .eq("room_id", roomId);
+
+    if (error) throw error;
+
+    // 4. LOGIKA MULAI: Hanya jika pemain > 1 DAN semuanya sudah isReady
+    if (allP && allP.length > 1 && allP.every(p => p.isReady)) {
+      // Ambil siapa yang paling pertama join untuk giliran awal
       const { data: first } = await supabase.from("players")
         .select("id")
         .eq("room_id", roomId)
@@ -158,10 +183,14 @@ const handleReady = async () => {
         .limit(1)
         .single();
 
-      await supabase.from("rooms").update({ 
-        status: "PLAYING",
-        currentPlayerTurnId: first?.id 
-      }).eq("id", roomId);
+      await supabase.from("rooms")
+        .update({ 
+          status: "PLAYING",
+          currentPlayerTurnId: first?.id 
+        })
+        .eq("id", roomId);
+    } else if (allP && allP.length <= 1) {
+      alert("Menunggu pemain lain bergabung...");
     }
   } catch (err) {
     console.error(err);
