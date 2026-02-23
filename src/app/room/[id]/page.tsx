@@ -15,12 +15,12 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
   const {
     board, fillCell, randomizeBoard, status, setGameStatus,
     players, updatePlayers, localPlayerId, playerName, numbersPicked,
-    setNumbersPicked, winnerId, setWinner,
+    setNumbersPicked, winnerId, setWinner, currentPlayerTurnId
   } = useGameStore();
 
   const [isUpdating, setIsUpdating] = useState(false);
 
-  // Menghitung jumlah baris Bingo (B-I-N-G-O)
+  // 1. Kalkulasi Progress BINGO (Progress Bar B-I-N-G-O)
   const linesCount = useMemo(() => {
     const checkedIndices = board
       .map((num, idx) => (numbersPicked.includes(num as number) ? idx : -1))
@@ -28,150 +28,147 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
     return checkBingoLines(checkedIndices);
   }, [board, numbersPicked]);
 
-  // 1. SINKRONISASI REAL-TIME & AUTO-REGISTRATION
+  // 2. Sinkronisasi Data & Realtime (CamelCase Match)
   useEffect(() => {
-    // Jika user masuk tanpa nama/ID (misal lewat link langsung), lempar ke Lobby
     if (!localPlayerId) {
       router.push("/");
       return;
     }
 
+    const fetchRoomData = async () => {
+      // Fetch Players - Menggunakan kolom "isReady" (CamelCase)
+      const { data: pData } = await supabase
+        .from("players")
+        .select('id, name, "isReady", board, created_at')
+        .eq("room_id", roomId)
+        .order("created_at", { ascending: true });
+      
+      if (pData) updatePlayers(pData);
+
+      // Fetch Room - Menggunakan kolom CamelCase sesuai SQL terakhir
+      const { data: rData } = await supabase
+        .from("rooms")
+        .select('status, "numbersPicked", "winnerId", "currentPlayerTurnId"')
+        .eq("id", roomId)
+        .single();
+
+      if (rData) {
+        setNumbersPicked(rData.numbersPicked || []);
+        if (rData.status !== status) setGameStatus(rData.status);
+        if (rData.winnerId) setWinner(rData.winnerId);
+        // Sync turn ke store
+        useGameStore.setState({ currentPlayerTurnId: rData.currentPlayerTurnId });
+      }
+    };
+
     const initSync = async () => {
-      // A. Daftarkan diri ke DB jika belum terdaftar di room ini
-      // Menggunakan upsert agar tidak membuat baris baru jika ID sudah ada
+      // Pastikan data player terdaftar/update di DB
       await supabase.from("players").upsert({
         id: localPlayerId,
         room_id: roomId,
         name: playerName,
       });
-
-      // B. Ambil data pemain & room secara berkala/awal
-      fetchRoomData();
+      await fetchRoomData();
     };
 
-    const fetchRoomData = async () => {
-      const { data: pData } = await supabase.from("players").select("*").eq("room_id", roomId);
-      if (pData) updatePlayers(pData);
-
-      const { data: rData } = await supabase.from("rooms").select("*").eq("id", roomId).single();
-      if (rData) {
-        setNumbersPicked(rData.numbersPicked || []);
-        if (rData.status !== status) setGameStatus(rData.status);
-        if (rData.winner_id) setWinner(rData.winner_id);
-      }
-    };
-
-    // C. Subscribe ke perubahan Real-time
-    const playerChannel = supabase
-      .channel(`players-${roomId}`)
-      .on("postgres_changes", { event: "*", schema: "public", table: "players", filter: `room_id=eq.${roomId}` }, 
-        () => fetchRoomData())
-      .subscribe();
-
-    const roomChannel = supabase
+    // Subskripsi Realtime untuk Player dan Room
+    const channel = supabase
       .channel(`room-${roomId}`)
-      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "rooms", filter: `id=eq.${roomId}` }, 
-        (payload) => {
+      .on("postgres_changes", { event: "*", schema: "public", table: "players", filter: `room_id=eq.${roomId}` }, () => fetchRoomData())
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "rooms", filter: `id=eq.${roomId}` }, (payload) => {
+        // Sinkronisasi state dari payload realtime
         setNumbersPicked(payload.new.numbersPicked || []);
         setGameStatus(payload.new.status);
-        setWinner(payload.new.winner_id);
-        // UPDATE INI: Masukkan current_turn_id ke store
-        useGameStore.setState({ currentPlayerTurnId: payload.new.current_turn_id });
-        })
+        if (payload.new.winnerId) setWinner(payload.new.winnerId);
+        useGameStore.setState({ currentPlayerTurnId: payload.new.currentPlayerTurnId });
+      })
       .subscribe();
 
     initSync();
 
     return () => {
-      supabase.removeChannel(playerChannel);
-      supabase.removeChannel(roomChannel);
+      supabase.removeChannel(channel);
     };
-  }, [roomId, localPlayerId, playerName, router]);
+  }, [roomId, localPlayerId, router]);
 
-  // 2. CEK KEMENANGAN (Otomatis saat mencapai 5 baris)
+  // 3. Cek Kemenangan Otomatis
   useEffect(() => {
     if (linesCount >= 5 && status === "PLAYING" && !winnerId) {
       supabase.from("rooms")
-        .update({ winner_id: localPlayerId, status: "FINISHED" })
+        .update({ winnerId: localPlayerId, status: "FINISHED" })
         .eq("id", roomId)
         .then();
     }
   }, [linesCount, status, winnerId, localPlayerId, roomId]);
 
-  // 3. HANDLER SAYA SIAP
-const handleReady = async () => {
-  if (!localPlayerId || isUpdating) return;
-  setIsUpdating(true);
-  
-  const isFull = board.filter(n => n !== null).length === 25;
-  const finalBoard = isFull ? board : Array.from({ length: 25 }, (_, i) => i + 1).sort(() => Math.random() - 0.5);
+  // 4. Handler "Saya Siap"
+  const handleReady = async () => {
+    if (!localPlayerId || isUpdating) return;
+    setIsUpdating(true);
 
-  try {
-    // 1. Update status ready diri sendiri
-    await supabase.from("players").update({ isReady: true, board: finalBoard }).eq("id", localPlayerId);
+    const isFull = board.filter(n => n !== null).length === 25;
+    const finalBoard = isFull ? board : Array.from({ length: 25 }, (_, i) => i + 1).sort(() => Math.random() - 0.5);
 
-    // 2. Ambil semua player untuk cek apakah semua sudah ready
-    const { data: allP } = await supabase.from("players")
-      .select("id, created_at, isReady")
-      .eq("room_id", roomId)
-      .order('created_at', { ascending: true }); // Urutkan berdasarkan waktu join
+    try {
+      // Update status isReady ke database
+      await supabase.from("players")
+        .update({ isReady: true, board: finalBoard })
+        .eq("id", localPlayerId);
 
-    if (allP && allP.length > 0 && allP.every(p => p.isReady)) {
-      // 3. Jika semua ready, tentukan player pertama (indeks 0 adalah yang paling pertama join)
+      // Cek apakah semua pemain sudah siap
+      const { data: allP } = await supabase.from("players").select('id, "isReady"').eq("room_id", roomId);
+      
+      if (allP && allP.every(p => p.isReady)) {
+        // Ambil player pertama berdasarkan waktu join (created_at) untuk giliran awal
+        const { data: first } = await supabase.from("players")
+          .select("id")
+          .eq("room_id", roomId)
+          .order("created_at", { ascending: true })
+          .limit(1)
+          .single();
+
+        await supabase.from("rooms").update({ 
+          status: "PLAYING",
+          currentPlayerTurnId: first?.id 
+        }).eq("id", roomId);
+      }
+    } catch (err) {
+      console.error("Gagal update status siap:", err);
+    } finally {
+      setIsUpdating(false);
+    }
+  };
+
+  // 5. Handler Klik Angka (Logika Giliran)
+  const handleCellClick = async (num: number, index: number) => {
+    if (status === "LOBBY" || status === "SETUP") {
+      fillCell(index);
+    } else if (status === "PLAYING") {
+      // VALIDASI: Hanya eksekusi jika giliran pemain lokal
+      if (currentPlayerTurnId !== localPlayerId) return;
+      if (numbersPicked.includes(num)) return;
+
+      const newPicked = [...numbersPicked, num];
+      
+      // Kalkulasi pemain berikutnya berdasarkan urutan join
+      const sortedPlayers = [...players].sort((a, b) => 
+        new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+      );
+      const myIdx = sortedPlayers.findIndex(p => p.id === localPlayerId);
+      const nextId = sortedPlayers[(myIdx + 1) % sortedPlayers.length].id;
+
+      // Update angka global dan pindahkan giliran
       await supabase.from("rooms").update({ 
-        status: "PLAYING",
-        current_turn_id: allP[0].id 
+        numbersPicked: newPicked,
+        currentPlayerTurnId: nextId 
       }).eq("id", roomId);
     }
-  } catch (err) {
-    console.error(err);
-  } finally {
-    setIsUpdating(false);
-  }
-};
-
-  // 4. HANDLER KLIK ANGKA
-const handleCellClick = async (num: number, index: number) => {
-  // Ambil data room terbaru untuk cek giliran
-  const { data: roomNow } = await supabase.from("rooms").select("current_turn_id").eq("id", roomId).single();
-  
-  if (status === "SETUP" || status === "LOBBY") {
-    fillCell(index);
-  } 
-  else if (status === "PLAYING") {
-    // CEK: Apakah ini giliran saya?
-    if (roomNow?.current_turn_id !== localPlayerId) {
-      alert("Sabar! Sekarang giliran " + players.find(p => p.id === roomNow?.current_turn_id)?.name);
-      return;
-    }
-
-    if (numbersPicked.includes(num)) return;
-
-    // 1. Update angka yang dipilih
-    const newPicked = [...numbersPicked, num];
-    
-    // 2. Cari siapa pemain berikutnya
-    // Urutkan player berdasarkan waktu join
-    const sortedPlayers = [...players].sort((a, b) => 
-      new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime()
-    );
-    
-    const currentIndex = sortedPlayers.findIndex(p => p.id === localPlayerId);
-    const nextIndex = (currentIndex + 1) % sortedPlayers.length;
-    const nextPlayerId = sortedPlayers[nextIndex].id;
-
-    // 3. Update angka dan pindahkan giliran di database
-    await supabase.from("rooms").update({ 
-      numbersPicked: newPicked,
-      current_turn_id: nextPlayerId
-    }).eq("id", roomId);
-  }
-};
+  };
 
   return (
     <div className="min-h-screen bg-[#0f172a] text-white p-4 font-sans selection:bg-pink-500/30">
       
-      {/* Sidebar - Daftar Pemain */}
+      {/* Sidebar - Daftar Pemain Online */}
       <div className="fixed top-4 left-4 z-10 hidden lg:block w-52 space-y-2">
         <p className="text-[10px] font-black opacity-30 uppercase tracking-[0.2em] px-2">Live Players</p>
         <div className="space-y-1">
@@ -179,7 +176,7 @@ const handleCellClick = async (num: number, index: number) => {
             <div key={p.id} className="bg-white/5 border border-white/10 p-3 rounded-2xl flex items-center gap-3 backdrop-blur-md">
               <div className={`w-2 h-2 rounded-full ${p.isReady ? "bg-green-500 shadow-[0_0_10px_#22c55e]" : "bg-yellow-500 animate-pulse"}`} />
               <span className={`text-sm truncate ${p.id === localPlayerId ? "text-pink-400 font-bold" : "text-white/70"}`}>
-                {p.name} {p.id === localPlayerId && "(You)"}
+                {p.name}
               </span>
             </div>
           ))}
@@ -188,7 +185,7 @@ const handleCellClick = async (num: number, index: number) => {
 
       <div className="max-w-md mx-auto pt-6 flex flex-col items-center">
         
-        {/* B-I-N-G-O Progress Bar */}
+        {/* B-I-N-G-O Progress Letters */}
         <div className="flex gap-3 mb-8">
           {"BINGO".split("").map((letter, i) => (
             <div 
@@ -203,20 +200,20 @@ const handleCellClick = async (num: number, index: number) => {
           ))}
         </div>
 
-        {/* Indikator Giliran */}
+        {/* Turn Indicator */}
         {status === "PLAYING" && !winnerId && (
-        <div className="mb-4 w-full bg-indigo-500/10 border border-indigo-500/20 py-2 px-4 rounded-xl text-center">
-            {players.find(p => p.id === useGameStore.getState().currentPlayerTurnId)?.id === localPlayerId ? (
-            <p className="text-green-400 font-bold animate-bounce">✨ Giliran Kamu! Klik satu angka.</p>
+          <div className="mb-6 px-6 py-2 rounded-full border border-indigo-500/30 bg-indigo-500/10 text-sm font-bold shadow-xl">
+            {currentPlayerTurnId === localPlayerId ? (
+              <span className="text-green-400 animate-pulse">✨ GILIRAN KAMU! Pilih angka...</span>
             ) : (
-            <p className="text-white/50 text-sm">
-                Menunggu <span className="text-white font-bold">{players.find(p => p.id === useGameStore.getState().currentPlayerTurnId)?.name}</span> memilih angka...
-            </p>
+              <span className="text-white/40">
+                Menunggu <span className="text-white">{players.find(p => p.id === currentPlayerTurnId)?.name}</span>...
+              </span>
             )}
-        </div>
+          </div>
         )}
 
-        {/* Room Information */}
+        {/* Room Box Info */}
         <div className="w-full bg-white/5 border border-white/10 p-5 rounded-3xl flex justify-between items-center mb-8 shadow-2xl backdrop-blur-sm">
           <div>
             <p className="text-[10px] text-pink-500 font-black uppercase tracking-widest">Arena Code</p>
@@ -229,15 +226,15 @@ const handleCellClick = async (num: number, index: number) => {
           )}
         </div>
 
-        {/* Bingo Grid 5x5 */}
-        <div className="grid grid-cols-5 gap-3 w-full aspect-square">
+        {/* Grid Bingo 5x5 */}
+        <div className="grid grid-cols-5 gap-3 w-full aspect-square mb-8">
           {board.map((num, index) => {
             const isPicked = numbersPicked.includes(num as number);
             return (
               <button 
                 key={index} 
                 onClick={() => handleCellClick(num as number, index)} 
-                disabled={status === "FINISHED"}
+                disabled={status === "FINISHED" || (status === "PLAYING" && currentPlayerTurnId !== localPlayerId)}
                 className={`relative aspect-square flex items-center justify-center text-xl font-black rounded-2xl border transition-all duration-300 transform active:scale-90
                   ${isPicked 
                     ? "bg-pink-600 border-pink-400 shadow-inner" 
@@ -247,16 +244,16 @@ const handleCellClick = async (num: number, index: number) => {
               >
                 {num}
                 {isPicked && (
-                  <div className="absolute inset-0 bg-black/20 flex items-center justify-center text-4xl opacity-40 select-none">✕</div>
+                  <div className="absolute inset-0 bg-black/20 flex items-center justify-center text-4xl opacity-30 select-none">✕</div>
                 )}
               </button>
             );
           })}
         </div>
 
-        {/* Action Controls */}
+        {/* Footer Actions */}
         {status !== "PLAYING" && status !== "FINISHED" && (
-          <div className="mt-10 flex gap-4 w-full">
+          <div className="flex gap-4 w-full">
             <button 
               onClick={randomizeBoard} 
               className="flex-1 py-4 bg-white/5 border border-white/10 rounded-2xl font-bold hover:bg-white/10 transition-all active:scale-95"
@@ -268,7 +265,7 @@ const handleCellClick = async (num: number, index: number) => {
               disabled={isUpdating}
               className="flex-[2] py-4 rounded-2xl font-black bg-gradient-to-r from-pink-600 to-rose-500 shadow-xl shadow-pink-900/20 hover:from-pink-500 hover:to-rose-400 transition-all active:scale-95 disabled:opacity-50"
             >
-              {isUpdating ? "LOADING..." : "SAYA SIAP"}
+              {isUpdating ? "MENGIRIM..." : "SAYA SIAP"}
             </button>
           </div>
         )}
